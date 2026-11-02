@@ -1,7 +1,8 @@
 # Specifications
 
 These documents define the intended jvm-link behavior. The current Rust package
-only verifies the contract by compilation; no JVM access runtime is implemented.
+verifies the public contract by compilation and implements internal Windows JVM
+discovery. The connection and scoped execution runtime is not yet implemented.
 
 ## Scope
 

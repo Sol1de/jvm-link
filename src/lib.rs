@@ -1,4 +1,4 @@
-//! JVM access contract: signatures only, without a runtime implementation.
+//! JVM access contract with internal Windows JVM discovery.
 //! The trait is a compilable specification, not a future runtime abstraction.
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -7,9 +7,13 @@ compile_error!("The jvm-link contract targets Windows x64 only.");
 pub use jni;
 use std::thread::ThreadId;
 
+// The connection runtime will consume this module in the next implementation stage.
+#[allow(dead_code)]
+mod vm_lookup;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Existing JVM lookup errors (future internal `vm_lookup` module).
+/// Existing JVM lookup errors from the internal `vm_lookup` module.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum DiscoveryError {
@@ -18,6 +22,7 @@ pub enum DiscoveryError {
     NoVm,
     InvalidVmPointer,
     MultipleVms,
+    InvalidVmCount { count: i32 },
     Jni(jni::errors::Error),
 }
 

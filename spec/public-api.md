@@ -42,7 +42,8 @@ under this constructor precondition. See [ownership](ownership.md).
 Public error enums are non-exhaustive. They distinguish:
 
 - JVM lookup failures: module/symbol absent, no VM, invalid VM pointer, multiple
-  VMs or a JNI error (`DiscoveryError`, produced by the future `vm_lookup` module).
+  VMs, invalid returned counts (`InvalidVmCount { count }`) or a JNI error
+  (`DiscoveryError`, produced by the internal `vm_lookup` module).
 - Unsupported or undetermined Java versions.
 - A closing/closed connection or still-active scopes.
 - An exception already pending before an operation.

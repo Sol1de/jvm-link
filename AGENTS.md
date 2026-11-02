@@ -3,7 +3,8 @@
 jvm-link is an independent Rust library for borrowing an existing in-process JVM
 on Windows x64. Java 21 is the initial target; Java 8 and 17 are future targets.
 The current package, `jvm-link-contract`, is a non-publishable design prototype,
-not a working JVM connection library. See [README.md](README.md).
+not a working JVM connection library. Internal Windows discovery is implemented.
+See [README.md](README.md).
 
 Before implementation, read the [specification index](spec/README.md) and its
 linked documents, then [src/lib.rs](src/lib.rs) for the compilable public contract.
@@ -15,6 +16,7 @@ Use Rust/Cargo on Windows x64. Run these commands from the project root:
 
 ```powershell
 cargo check --locked
+cargo test --lib --locked
 cargo test --doc --locked
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
@@ -26,7 +28,7 @@ These commands check the current prototype without starting a JVM.
 
 - Reuse `jni` 0.22.4 with default features disabled and without `invocation`.
   Reuse its environments, references, frames and errors; do not build another JNI SDK.
-- Name the future JVM lookup module `src/vm_lookup.rs`.
+- Keep JVM lookup in the internal `src/vm_lookup.rs` module.
 - Centralize Java/JNI compatibility decisions internally. Keep connection,
   ownership and scope logic shared across supported Java versions.
 - Distinguish Java runtime, JNI interface and Rust binding versions. Do not

@@ -18,7 +18,8 @@ API compatibility review. Version 0.22 uses `Env` and `Global<T>`; do not copy
 
 ## Module boundaries
 
-Only `src/lib.rs` exists in the prototype. The intended runtime layout is:
+The prototype contains `src/lib.rs` and the private `src/vm_lookup.rs` discovery
+module. The intended runtime layout is:
 
 | Module | Responsibility |
 | --- | --- |
@@ -41,6 +42,18 @@ new VM, invoke `JNI_CreateJavaVM` or call `DestroyJavaVM`.
 Distinguish missing module, missing symbol, no VM, invalid pointer, multiple VMs
 and JNI failure. Never choose an arbitrary VM from ambiguous results. Validate
 codes and pointers before conversion, using `jni::sys` and the Windows system ABI.
+
+Discovery uses `GetModuleHandleW` and `GetProcAddress`, without loading the DLL or
+changing its reference count. Host liveness is an unsafe caller obligation during
+lookup as well as subsequent use. A single buffered VM slot suffices: the returned
+count identifies ambiguous results even when it exceeds capacity. Check JNI status
+before outputs; reject negative or unwritten counts with `InvalidVmCount`, zero
+with `NoVm`, and counts above one with `MultipleVms`. Check VM-slot and invocation
+table pointers for null and alignment before returning a `NonNull<jni::sys::JavaVM>`.
+The trusted host JNI export must supply readable pointer storage; structural checks
+cannot establish arbitrary memory validity or protect against host shutdown.
+Discovery neither calls VM methods nor initializes the binding's VM singleton.
+Java version admission remains the connection compatibility layer's responsibility.
 
 Batch work inside a scope to avoid repeated attachment costs. Class names, method
 signatures and class loaders remain JNI concerns: consumers supply the appropriate
