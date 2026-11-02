@@ -1,0 +1,60 @@
+# Ownership and threads
+
+The host owns the JVM throughout its lifetime. A connection borrows VM access,
+not a thread's JNI environment. Each operation receives an `Env` valid only for
+its current thread and local frame, following the
+[Java 21 JNI rules](https://docs.oracle.com/en/java/javase/21/docs/specs/jni/design.html).
+
+## Resource ownership
+
+| Resource | Owner | End of lifetime |
+| --- | --- | --- |
+| JVM and host module | Host | Host-controlled, after all borrowed access ends. |
+| Connection state | `Connection` | Explicit shutdown followed by Rust destruction. |
+| Pre-existing attachment | Host or another library | Never detached by jvm-link. |
+| Attachment created by jvm-link | Current thread's state | Last owning scope exits; failed detach remains pending for that thread to retry. |
+| Environment and local references | Thread-local scope/frame | Before scope exit, including errors and unwinding. |
+| Exported global reference | Binding consumer | Binding-defined destruction, before host shutdown. |
+
+The host-liveness obligation includes global references stored inside errors.
+Exported globals may outlive the connection but never the JVM. They keep Java
+objects alive until released; consumers must control their lifetimes.
+
+## Scoped execution
+
+1. Admit and count the scope under the same lock as the shutdown state. Release
+   that lock before JNI execution or user callbacks.
+2. Call `GetEnv`. Borrow an existing attachment without changing its ownership.
+   Only on `JNI_EDETACHED`, call `AttachCurrentThreadAsDaemon`; stop on other errors.
+3. Track ownership and nested scope depth in thread-local state. Open a fresh
+   local frame and pass its environment to the closure.
+4. Handle exceptions and release the frame before detachment. Only the last
+   owning scope detaches; an inner scope never detaches an outer scope's thread.
+5. Decrement the active scope count on success, error and unwinding.
+
+Scopes nest in LIFO order. Do not use the outer environment while an inner scope
+is active: the binding checks the current frame and may panic on incorrect order.
+Never hold a connection-wide lock across Java calls or user callbacks, including
+reentrant callbacks.
+
+A scope cannot move between threads or survive an `await`. Local references
+cannot escape it. A global reference may cross threads as allowed by its binding
+type, but this does not make the referenced Java object safe for concurrent access.
+Local frames bound temporary lifetimes, not allocations inside an unbounded loop;
+use binding subframes and temporary-reference management when needed.
+
+## Low-level attachment boundary
+
+In `jni` 0.22.4, `AttachConfig` does not expose the required daemon mode.
+`AttachGuard::drop` logs detach failures and explicit detachment consumes the
+guard. Those helpers alone do not satisfy retryable cleanup.
+
+Keep a narrow unsafe boundary for `GetEnv`, `AttachCurrentThreadAsDaemon`,
+`DetachCurrentThread` and temporary conversion to a borrowed environment. Validate
+return codes and pointers before conversion; reuse binding frames and reference
+types afterward. jvm-link retains attachment ownership until successful detach
+rather than losing it in a consumed guard. Test this boundary before relying on it.
+
+References: [binding attachment source](https://docs.rs/jni/0.22.4/src/jni/vm/java_vm.rs.html),
+[environment lifetimes](https://docs.rs/jni/0.22.4/jni/struct.Env.html), and
+[Java 21 Invocation API](https://docs.oracle.com/en/java/javase/21/docs/specs/jni/invocation.html).

@@ -1,0 +1,9 @@
+[package]
+name = "jvm-link-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Compilable JVM access contract, without a runtime implementation"
+
+[dependencies]
+jni = { version = "=0.22.4", default-features = false }
