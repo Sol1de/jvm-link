@@ -1,9 +1,8 @@
 # Specifications
 
 These documents define the intended jvm-link behavior. The current Rust package
-verifies the public contract by compilation and implements internal Windows JVM
-discovery and internal thread attachment scopes. The public connection runtime
-is not yet implemented.
+verifies the public API by compilation and implements Windows JVM discovery,
+thread attachment scopes, Java 21 admission and a public connection lifecycle.
 
 ## Scope
 

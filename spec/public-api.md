@@ -1,9 +1,8 @@
 # Public API
 
 The authoritative signatures and error types are in [src/lib.rs](../src/lib.rs).
-`ConnectionContract` is currently a compilation fixture without an implementation.
-The runtime will expose inherent methods on an opaque `Connection`, not a public
-backend trait or user-provided implementations.
+`Connection` is an opaque public type with inherent methods. It replaces the
+temporary `ConnectionContract` fixture; no public backend trait is exposed.
 
 ## Connection operations
 
@@ -13,7 +12,7 @@ backend trait or user-provided implementations.
 | `connection.with_env(operation)` | Run a synchronous closure in a fresh local frame, cleaned before returning its result. |
 | `connection.close()` | Explicitly close owned resources without consuming the connection, allowing retries. |
 
-The future `Connection` is `Send + Sync`, shareable by reference or `Arc`, without
+`Connection` is `Send + Sync`, shareable by reference or `Arc`, without
 its own `Clone` implementation. The scoped operation accepts
 `for<'local> FnOnce(&mut Env<'local>) -> Result<T>`. `T` is independent of the local
 frame lifetime: owned Rust values and global references may escape; local
@@ -53,15 +52,18 @@ Public error enums are non-exhaustive. They distinguish:
   cause and operation error (`ExceptionCapture`).
 - Cleanup failure with the owning thread and any simultaneous operation error.
 - Pending cleanup owned by other threads.
+- Constructor validation failure with outstanding cleanup (`ConnectionFailed`):
+  the original structured error and a boxed closing connection are retained.
+  Only `close` is permitted on this connection; retry on its owner thread.
 
-The runtime will implement `Display` and `std::error::Error`; the prototype does
-not define final diagnostic messages. Do not parse error text to decide retries.
+Errors implement `Display` and `std::error::Error`, retaining typed causes.
+Diagnostic text is not stable; do not parse it to decide retries.
 See [lifecycle](lifecycle.md) for exception and cleanup policies.
 
 ## Contract validation
 
 The doctests compile a valid consumer and reject four invalid cases: escaping an
 environment, escaping a local reference, moving an environment to another thread,
-and moving a local reference to another thread. Preserve these checks when moving
-from the trait fixture to the real API. They do not exercise a JVM or prove the
+and moving a local reference to another thread. These checks target the real
+`Connection` API. They do not exercise a JVM or prove the
 runtime's ownership and cleanup behavior.

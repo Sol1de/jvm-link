@@ -1,5 +1,5 @@
 //! Technical Java 21 adapter: compiles private discovery and scope modules unchanged.
-use jvm_link_contract::{DiscoveryError, Error, Result};
+use jvm_link_contract::{Connection, DiscoveryError, Error, Result};
 
 #[path = "../../../src/config.rs"]
 mod config;
@@ -26,16 +26,113 @@ pub unsafe extern "system" fn Java_DiscoveryHost_check(
             assert_eq!(vm_lookup::discover().unwrap().as_ptr(), expected);
         }
         let vm = std::ptr::NonNull::new(expected).unwrap();
+        exercise_shutdown(vm);
         exercise_scopes(vm, false);
         let address = expected as usize;
         std::thread::spawn(move || {
             let vm = std::ptr::NonNull::new(address as *mut jni::sys::JavaVM).unwrap();
+            let connection = Connection::connect_existing().unwrap();
+            assert_eq!(status(vm), jni::sys::JNI_EDETACHED);
+            connection.close().unwrap();
             exercise_scopes(vm, true);
+            assert!(scope::cleanup_owners(vm).is_empty());
+            assert!(scope::take_cleanup_error(vm).is_none());
         })
         .join()
         .unwrap();
     });
     passed.is_ok()
+}
+
+/// # Safety
+/// Called only by DiscoveryHost on its live Java 21 VM.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_DiscoveryHost_admission(
+    _: *mut jni::sys::JNIEnv,
+    _: jni::sys::jclass,
+) -> jni::sys::jint {
+    std::panic::catch_unwind(|| match unsafe { Connection::connect_existing() } {
+        Ok(connection) => {
+            connection.close().unwrap();
+            21
+        }
+        Err(Error::UnsupportedJavaVersion { detected }) => -i32::from(detected),
+        Err(Error::JavaVersionUndetermined) => 0,
+        Err(error) => panic!("unexpected admission error: {error:?}"),
+    })
+    .unwrap_or(-1)
+}
+
+unsafe fn exercise_shutdown(vm: std::ptr::NonNull<jni::sys::JavaVM>) {
+    let connection = unsafe { Connection::connect_existing().unwrap() };
+    connection
+        .with_env(|_| {
+            assert!(matches!(
+                connection.close(),
+                Err(Error::Busy { active_scopes: 1 })
+            ));
+            assert!(matches!(
+                connection.with_env(|_| Ok(())),
+                Err(Error::Closing)
+            ));
+            Ok(())
+        })
+        .unwrap();
+    connection.close().unwrap();
+    connection.close().unwrap();
+    assert_eq!(unsafe { status(vm) }, jni::sys::JNI_OK);
+
+    let connection = unsafe { Connection::connect_existing().unwrap() };
+    let barrier = std::sync::Barrier::new(2);
+    let address = vm.as_ptr() as usize;
+    std::thread::scope(|threads| {
+        threads.spawn(|| {
+            connection
+                .with_env(|env| {
+                    let local = env.new_string("alive during close")?;
+                    barrier.wait();
+                    barrier.wait();
+                    assert_eq!(local.try_to_string(env)?, "alive during close");
+                    Ok(())
+                })
+                .unwrap();
+            let vm = std::ptr::NonNull::new(address as *mut jni::sys::JavaVM).unwrap();
+            assert_eq!(unsafe { status(vm) }, jni::sys::JNI_EDETACHED);
+        });
+        barrier.wait();
+        assert!(matches!(
+            connection.close(),
+            Err(Error::Busy { active_scopes: 1 })
+        ));
+        assert!(matches!(
+            connection.with_env(|_| Ok(())),
+            Err(Error::Closing)
+        ));
+        barrier.wait();
+    });
+    std::thread::scope(|threads| {
+        for _ in 0..8 {
+            threads.spawn(|| connection.close().unwrap());
+        }
+    });
+    assert!(matches!(
+        connection.with_env(|_| Ok(())),
+        Err(Error::Closed)
+    ));
+
+    let connection = unsafe { Connection::connect_existing().unwrap() };
+    assert!(matches!(
+        connection.with_env::<()>(|_| Err(Error::Closing)),
+        Err(Error::Closing)
+    ));
+    assert!(
+        std::panic::catch_unwind(|| {
+            connection.with_env::<()>(|_| panic!("expected connection operation panic"))
+        })
+        .is_err()
+    );
+    connection.close().unwrap();
+    assert_eq!(unsafe { status(vm) }, jni::sys::JNI_OK);
 }
 
 unsafe fn status(vm: std::ptr::NonNull<jni::sys::JavaVM>) -> i32 {
@@ -101,6 +198,10 @@ unsafe fn exercise_scopes(vm: std::ptr::NonNull<jni::sys::JavaVM>, native: bool)
                     Err(jni::errors::Error::JavaException)
                 ));
                 let before = env.exception_occurred().unwrap();
+                assert!(matches!(
+                    Connection::connect_existing(),
+                    Err(Error::PendingJavaException)
+                ));
                 assert!(matches!(
                     scope::with_env::<()>(vm, |_| panic!("pending exception must block entry")),
                     Err(Error::PendingJavaException)

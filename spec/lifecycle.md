@@ -17,7 +17,7 @@
   secondary pending exception before cleanup; no throwable is claimed recovered.
   Test allocation failure in particular.
 - A Rust panic continues unwinding after cleanup; never convert it into success.
-  Retain any cleanup failure during unwinding in connection state for `close()`
+  Retain any cleanup failure during unwinding in shared VM ownership state for `close()`
   to report.
 
 Reuse binding capture/rethrow facilities without silently clearing an exception
@@ -64,6 +64,19 @@ workers exit is the contractual cleanup path.
 Exported globals are neither invalidated by shutdown nor collected in a hidden
 registry. Consumers release them through the binding. The host must remain alive
 until they are released. No jvm-link shutdown or destructor calls `DestroyJavaVM`.
+
+The public `Connection` implements these transitions and validates Java 21 during
+construction. `Drop` attempts only owner-thread cleanup; it does not wait for
+active scopes and performs no diagnostic I/O. TLS retains a failed attachment.
+The shared owner registry retains unreported unwind/Drop cleanup causes
+even after a successful detach. Owner-thread `close` retries cleanup and reports
+those causes; a simultaneous new cleanup error wraps the old cause in `operation`.
+After observation, another close completes the transition to Closed. Drop never
+consumes an unreported error. A later connection to that VM can retry/report on
+the owner thread; an exited owner cannot be repaired remotely. Because ownership
+is shared per VM, `CleanupPending` may also
+report an attachment still active through another connection, including the
+calling thread; it is never detached while its scope depth is nonzero.
 
 ## Required runtime checks
 

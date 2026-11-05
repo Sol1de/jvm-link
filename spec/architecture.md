@@ -11,7 +11,7 @@ would require unsafe wrappers for routine calls and reference handling; use
 `jni::sys` only at the necessary low-level boundaries. Do not generate another
 binding or build a replacement JNI SDK.
 
-The future API reexports the binding as `jvm_link::jni`. Its types are therefore
+The prototype reexports the binding as `jvm_link_contract::jni`. Its types are therefore
 part of the public contract: an incompatible binding upgrade requires a public
 API compatibility review. Version 0.22 uses `Env` and `Global<T>`; do not copy
 0.21 examples assuming the old `JNIEnv` API.
@@ -19,7 +19,8 @@ API compatibility review. Version 0.22 uses `Env` and `Global<T>`; do not copy
 ## Module boundaries
 
 The prototype contains `src/lib.rs`, private JVM discovery and attachment scope
-modules, and embedded configuration. The intended runtime layout is:
+modules, the public connection lifecycle, and embedded configuration. The
+intended runtime layout is:
 
 | Module | Responsibility |
 | --- | --- |
@@ -30,8 +31,8 @@ modules, and embedded configuration. The intended runtime layout is:
 | `config.rs` | Configuration loading, types and validation. |
 | `error.rs` | Structured public errors. |
 
-Keep internals private. Replace the prototype trait with inherent methods on
-`Connection` as the runtime is implemented, preserving its contract checks.
+Keep implementation modules private. The opaque public `Connection` replaces the
+prototype trait and preserves its lifetime/thread contract checks.
 
 Configuration values live directly in the root `config.toml`, without sections.
 `src/config.rs` uses a single `Config` struct and embeds the file with `include_str!`,
@@ -97,6 +98,14 @@ During connection validation, use a technical scope to identify Java, including
 the JNI capability checks required for safe calls. Reject non-21 versions with
 `UnsupportedJavaVersion`; report `JavaVersionUndetermined` if identification fails
 rather than assuming 21. Preserve JNI causes and cleanup retry rules on failure.
+
+`connection.rs` centralizes this admission: check the JNI interface is at least
+1.8, read and parse the Java property, admit only 21, and retain the detected Java
+and JNI versions in the connection. Missing/invalid property values are
+`JavaVersionUndetermined`; JNI/Java failures keep their structured causes.
+If validation leaves cleanup outstanding, `ConnectionFailed` returns both its
+cause and a closing connection so the caller can explicitly retry on the owner
+thread. No operation is admitted on that failed connection.
 
 Adding a supported version requires reviewing binding compatibility, actual JNI
 calls and behavior differences, updating the centralized policy, and running

@@ -65,11 +65,20 @@ This also retains failures during unwinding. No TLS borrow spans JNI or a callba
 The `jni_version` field in the root `config.toml`, read and validated by
 `src/config.rs`, selects JNI 1.8
 for these baseline invocation calls; this
-is an interface request, not Java runtime admission. Java 21 admission and the
-public connection lifecycle remain later work. The internal entry preserves an
+is an interface request, not Java runtime admission. The connection validates
+Java 21 separately. The internal entry preserves an
 exception pending on entry; JL-4 normalizes operation exceptions before frame
-release and detachment. The public trait remains a contract fixture until the
-connection layers are ready.
+release and detachment. Public lifetime/thread checks now target `Connection`.
+
+JL-5 adds `src/connection.rs`: an opaque public connection which discovers the
+host VM and validates compatibility at its unsafe constructor. A short mutex-protected admission guard counts
+scopes and releases its count after attachment cleanup, including unwinding.
+No connection lock spans JNI or callbacks. A process-wide registry records only
+VM addresses, owning thread IDs and unreported cleanup errors, from successful
+daemon attachment through successful detachment and error observation.
+It shares no environment and tracks ownership across
+connections to the same VM. Closing another connection cannot detach an active
+outer scope; it reports `CleanupPending` until that owner finishes.
 
 In `jni` 0.22.4, `AttachConfig` does not expose the required daemon mode.
 `AttachGuard::drop` logs detach failures and explicit detachment consumes the

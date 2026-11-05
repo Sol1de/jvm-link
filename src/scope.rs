@@ -1,12 +1,26 @@
 //! Current-thread attachment ownership; no connection or Java-version admission yet.
 use crate::{Error, Result, config};
 use jni::{AttachGuard, Env, errors::jni_error_code_to_result, sys};
-use std::{cell::RefCell, collections::HashMap, marker::PhantomData, ptr::NonNull, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    marker::PhantomData,
+    ptr::NonNull,
+    rc::Rc,
+    sync::{Mutex, OnceLock},
+    thread::ThreadId,
+};
 
 #[derive(Default)]
 struct State {
     depth: usize,
     owned: bool,
+}
+
+#[derive(Default)]
+struct Owner {
+    attached: bool,
+    error: Option<Error>,
 }
 
 thread_local! {
@@ -21,7 +35,6 @@ struct Attachment {
 }
 
 impl Attachment {
-    // Safety: vm is a genuine live host VM, including its invocation table.
     unsafe fn enter(vm: NonNull<sys::JavaVM>) -> Result<Self> {
         let jni_version = config::get().jni_version();
         let mut raw = std::ptr::null_mut();
@@ -41,6 +54,14 @@ impl Attachment {
                 )
             };
             jni_error_code_to_result(code).map_err(Error::Attach)?;
+            owners()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(vm.as_ptr() as usize)
+                .or_default()
+                .entry(std::thread::current().id())
+                .or_default()
+                .attached = true;
             true
         } else {
             jni_error_code_to_result(code).map_err(Error::Attach)?;
@@ -97,8 +118,10 @@ impl Attachment {
 
 impl Drop for Attachment {
     fn drop(&mut self) {
-        if self.active {
-            let _ = self.release();
+        if self.active
+            && let Err(error) = self.release()
+        {
+            retain_cleanup_error(self.vm, error);
         }
     }
 }
@@ -108,17 +131,20 @@ impl Drop for Attachment {
 /// The host VM and its invocation table must still be alive.
 pub(crate) unsafe fn retry_cleanup(vm: NonNull<sys::JavaVM>) -> Result<()> {
     let key = vm.as_ptr() as usize;
-    let owned = ATTACHMENTS.with(|states| {
-        let mut states = states.borrow_mut();
-        match states.get(&key) {
-            Some(state) if state.depth != 0 => false,
-            Some(state) if state.owned => true,
-            _ => {
-                states.remove(&key);
-                false
+    let owned = ATTACHMENTS
+        .try_with(|states| {
+            let mut states = states.borrow_mut();
+
+            match states.get(&key) {
+                Some(state) if state.depth != 0 => false,
+                Some(state) if state.owned => true,
+                _ => {
+                    states.remove(&key);
+                    false
+                }
             }
-        }
-    });
+        })
+        .unwrap_or(false);
     if owned {
         let code = unsafe { ((**vm.as_ptr()).v1_1.DetachCurrentThread)(vm.as_ptr()) };
         jni_error_code_to_result(code).map_err(|source| Error::Cleanup {
@@ -129,6 +155,21 @@ pub(crate) unsafe fn retry_cleanup(vm: NonNull<sys::JavaVM>) -> Result<()> {
         ATTACHMENTS.with(|states| {
             states.borrow_mut().remove(&key);
         });
+        let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(threads) = owners.get_mut(&key) {
+            let owner = std::thread::current().id();
+
+            if let Some(state) = threads.get_mut(&owner) {
+                state.attached = false;
+                if state.error.is_none() {
+                    threads.remove(&owner);
+                }
+            }
+
+            if threads.is_empty() {
+                owners.remove(&key);
+            }
+        }
     }
     Ok(())
 }
@@ -199,6 +240,53 @@ fn normalize_exception<T>(
             operation: result.err().map(Box::new),
         }),
     }
+}
+
+fn owners() -> &'static Mutex<HashMap<usize, HashMap<ThreadId, Owner>>> {
+    static OWNERS: OnceLock<Mutex<HashMap<usize, HashMap<ThreadId, Owner>>>> = OnceLock::new();
+    OWNERS.get_or_init(Mutex::default)
+}
+
+pub(crate) fn cleanup_owners(vm: NonNull<sys::JavaVM>) -> Vec<ThreadId> {
+    owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(vm.as_ptr() as usize))
+        .map(|owners| owners.keys().copied().collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn retain_cleanup_error(vm: NonNull<sys::JavaVM>, mut error: Error) {
+    let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
+    let state = owners
+        .entry(vm.as_ptr() as usize)
+        .or_default()
+        .entry(std::thread::current().id())
+        .or_default();
+
+    if let Error::Cleanup { operation, .. } = &mut error {
+        debug_assert!(operation.is_none());
+        *operation = state.error.take().map(Box::new);
+    }
+    state.error = Some(error);
+}
+
+pub(crate) fn take_cleanup_error(vm: NonNull<sys::JavaVM>) -> Option<Error> {
+    let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
+    let key = vm.as_ptr() as usize;
+    let threads = owners.get_mut(&key)?;
+    let owner = std::thread::current().id();
+    let state = threads.get_mut(&owner)?;
+    let error = state.error.take();
+
+    if !state.attached {
+        threads.remove(&owner);
+    }
+
+    if threads.is_empty() {
+        owners.remove(&key);
+    }
+    error
 }
 
 #[cfg(test)]
@@ -323,6 +411,7 @@ mod tests {
         });
         test(NonNull::from(&mut vm));
         ATTACHMENTS.with(|states| assert!(states.borrow().is_empty()));
+        assert!(cleanup_owners(NonNull::from(&mut vm)).is_empty());
     }
 
     #[test]
@@ -441,7 +530,186 @@ mod tests {
             MOCK.with(|m| m.borrow_mut().detach_code = 0);
             retry_cleanup(vm).unwrap();
             retry_cleanup(vm).unwrap();
+            assert!(matches!(
+                take_cleanup_error(vm),
+                Some(Error::Cleanup { .. })
+            ));
             MOCK.with(|m| assert_eq!(m.borrow().detaches, 3));
+        });
+    }
+
+    #[test]
+    fn connection_close_preserves_failed_detach_and_reports_remote_owner() {
+        fixture(false, |vm| unsafe {
+            let connection = crate::connection::Connection::from_vm(vm);
+            let mut attachment = Attachment::enter(vm).unwrap();
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+            assert!(matches!(
+                attachment.finish::<()>(Err(Error::Closing)),
+                Err(Error::Cleanup {
+                    operation: Some(_),
+                    ..
+                })
+            ));
+            std::thread::scope(|threads| {
+                let connection = &connection;
+                let owner = std::thread::current().id();
+                threads
+                    .spawn(move || {
+                        assert!(
+                            matches!(connection.close(), Err(Error::CleanupPending { owners })
+                        if owners == vec![owner])
+                        );
+                    })
+                    .join()
+                    .unwrap();
+            });
+            assert!(matches!(connection.close(), Err(Error::Cleanup { .. })));
+            assert!(matches!(
+                connection.with_env(|_| Ok(())),
+                Err(Error::Closing)
+            ));
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            connection.close().unwrap();
+            connection.close().unwrap();
+            assert!(cleanup_owners(vm).is_empty());
+            MOCK.with(|m| assert_eq!(m.borrow().detaches, 3));
+        });
+    }
+
+    #[test]
+    fn connection_drop_leaves_unwind_cleanup_owned_for_retry() {
+        fixture(false, |vm| unsafe {
+            let connection = crate::connection::Connection::from_vm(vm);
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _attachment = Attachment::enter(vm).unwrap();
+                    panic!("operation");
+                })
+                .is_err()
+            );
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            drop(connection);
+            MOCK.with(|m| assert!(!m.borrow().attached));
+            assert_eq!(cleanup_owners(vm), vec![std::thread::current().id()]);
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            let retry = crate::connection::Connection::from_vm(vm);
+            assert!(matches!(retry.close(), Err(Error::Cleanup { .. })));
+            retry.close().unwrap();
+            assert!(cleanup_owners(vm).is_empty());
+        });
+    }
+
+    #[test]
+    fn closing_another_connection_cannot_detach_an_active_attachment() {
+        fixture(false, |vm| unsafe {
+            let connection = crate::connection::Connection::from_vm(vm);
+            let mut attachment = Attachment::enter(vm).unwrap();
+            assert!(
+                matches!(connection.close(), Err(Error::CleanupPending { owners })
+                if owners == vec![std::thread::current().id()])
+            );
+            MOCK.with(|m| assert_eq!(m.borrow().detaches, 0));
+            attachment.finish(Ok(())).unwrap();
+            connection.close().unwrap();
+        });
+    }
+
+    #[test]
+    fn close_retries_cleanup_retained_during_unwind() {
+        fixture(false, |vm| unsafe {
+            let connection = crate::connection::Connection::from_vm(vm);
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _attachment = Attachment::enter(vm).unwrap();
+                    panic!("operation");
+                })
+                .is_err()
+            );
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            assert!(matches!(
+                connection.close(),
+                Err(Error::Cleanup {
+                    source: jni::errors::Error::JniCall(jni::errors::JniError::Unknown),
+                    ..
+                })
+            ));
+            MOCK.with(|m| assert!(!m.borrow().attached));
+            connection.close().unwrap();
+        });
+    }
+
+    #[test]
+    fn drop_never_waits_for_stderr() {
+        let stderr = std::io::stderr();
+        let lock = stderr.lock();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            fixture(false, |vm| unsafe {
+                let connection = crate::connection::Connection::from_vm(vm);
+                let mut attachment = Attachment::enter(vm).unwrap();
+                MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+                assert!(attachment.finish(Ok(())).is_err());
+                drop(connection);
+                sent.send(()).unwrap();
+                MOCK.with(|m| m.borrow_mut().detach_code = 0);
+                retry_cleanup(vm).unwrap();
+                assert!(matches!(
+                    take_cleanup_error(vm),
+                    Some(Error::Cleanup { .. })
+                ));
+            });
+        });
+        let result = received.recv_timeout(std::time::Duration::from_secs(2));
+        drop(lock);
+        worker.join().unwrap();
+        result.expect("Drop blocked on stderr");
+    }
+
+    #[test]
+    fn failed_constructor_keeps_a_closing_connection_for_retry() {
+        fixture(false, |vm| unsafe {
+            let connection = crate::Connection::from_vm(vm);
+            let mut attachment = Attachment::enter(vm).unwrap();
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+            let validation =
+                attachment.finish::<(u16, jni::JNIVersion)>(Err(Error::UnsupportedJavaVersion {
+                    detected: 17,
+                }));
+            let Error::ConnectionFailed { source, connection } =
+                connection.complete_validation(validation).unwrap_err()
+            else {
+                panic!("lost retry path");
+            };
+            assert!(
+                matches!(*source, Error::Cleanup { operation: Some(error), .. }
+                if matches!(*error, Error::UnsupportedJavaVersion { detected: 17 }))
+            );
+            assert!(matches!(
+                connection.with_env(|_| Ok(())),
+                Err(Error::Closing)
+            ));
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            connection.close().unwrap();
+        });
+    }
+
+    #[test]
+    fn retry_error_keeps_the_original_unwind_cause() {
+        fixture(false, |vm| unsafe {
+            let connection = crate::Connection::from_vm(vm);
+            let attachment = Attachment::enter(vm).unwrap();
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+            drop(attachment);
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ENOMEM);
+            assert!(matches!(connection.close(), Err(Error::Cleanup {
+                source: jni::errors::Error::JniCall(jni::errors::JniError::NoMemory),
+                operation: Some(error), ..
+            }) if matches!(*error, Error::Cleanup { source: jni::errors::Error::JniCall(jni::errors::JniError::Unknown), .. })));
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            connection.close().unwrap();
         });
     }
 }

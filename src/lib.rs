@@ -1,17 +1,15 @@
-//! JVM access contract with internal Windows JVM discovery.
-//! The trait is a compilable specification, not a future runtime abstraction.
+//! Borrow an existing Java 21 JVM on Windows x64 without owning its lifetime.
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 compile_error!("The jvm-link contract targets Windows x64 only.");
 
+pub use connection::Connection;
 pub use jni;
 use std::thread::ThreadId;
 
-#[allow(dead_code)]
 mod config;
-#[allow(dead_code)]
+mod connection;
 mod scope;
-#[allow(dead_code)]
 mod vm_lookup;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -33,6 +31,12 @@ pub enum DiscoveryError {
 #[non_exhaustive]
 pub enum Error {
     Discovery(DiscoveryError),
+    /// Validation failed with outstanding cleanup. Only `close` is permitted on
+    /// the retained connection; retry on the owning thread before releasing it.
+    ConnectionFailed {
+        source: Box<Error>,
+        connection: Box<Connection>,
+    },
     UnsupportedJavaVersion {
         detected: u16,
     },
@@ -72,33 +76,48 @@ impl From<jni::errors::Error> for Error {
     }
 }
 
-/// The future opaque `Connection` will expose these as inherent methods.
-/// This prototype provides no implementation or fake backend.
-pub trait ConnectionContract: Send + Sync + Sized {
-    /// Borrows the in-process JVM without creating or owning it.
-    /// Validates compatibility; initially, only Java 21 is admitted.
-    ///
-    /// # Safety
-    /// The host must keep the JVM and jvm.dll alive until all scopes, attachments
-    /// and global references, including those held by errors, have been released.
-    unsafe fn connect_existing() -> Result<Self>;
+impl std::fmt::Display for DiscoveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JVM discovery failed: {self:?}")
+    }
+}
 
-    /// Runs a synchronous operation in a fresh local frame.
-    /// `T` is independent of the frame's lifetime.
-    fn with_env<T, F>(&self, operation: F) -> Result<T>
-    where
-        F: for<'local> FnOnce(&mut jni::Env<'local>) -> Result<T>;
+impl std::error::Error for DiscoveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Jni(source) => Some(source),
+            _ => None,
+        }
+    }
+}
 
-    /// Closes without waiting for active scopes; retryable on the same object.
-    /// Pending detach cleanup can only be retried by its owning thread.
-    fn close(&self) -> Result<()>;
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "jvm-link: {self:?}")
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Discovery(source) => Some(source),
+            Self::ConnectionFailed { source, .. } => Some(source.as_ref()),
+            Self::Attach(source)
+            | Self::Frame(source)
+            | Self::Operation(source)
+            | Self::ExceptionCapture { source, .. }
+            | Self::Cleanup { source, .. } => Some(source),
+            Self::JavaException { operation, .. } => operation.as_deref().map(|e| e as _),
+            _ => None,
+        }
+    }
 }
 
 /// A compiled consumer, without starting a JVM.
 ///
 /// ```
-/// use jvm_link_contract::{ConnectionContract, Result};
-/// fn execute<C: ConnectionContract>(connection: &C) -> Result<()> {
+/// use jvm_link_contract::{Connection, Result};
+/// fn execute(connection: &Connection) -> Result<()> {
 ///     let _: i32 = connection.with_env(|_| Ok(42))?;
 ///     connection.with_env(|env| {
 ///         let _version = env.version();
@@ -118,8 +137,8 @@ pub trait ConnectionContract: Send + Sync + Sized {
 /// A local environment cannot escape the closure.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::ConnectionContract;
-/// fn escape<C: ConnectionContract>(connection: &C) {
+/// use jvm_link_contract::Connection;
+/// fn escape(connection: &Connection) {
 ///     let _env = connection.with_env(|env| Ok(env));
 /// }
 /// ```
@@ -127,8 +146,8 @@ pub trait ConnectionContract: Send + Sync + Sized {
 /// A local reference cannot escape its frame.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::ConnectionContract;
-/// fn escape<C: ConnectionContract>(connection: &C) {
+/// use jvm_link_contract::Connection;
+/// fn escape(connection: &Connection) {
 ///     let _local = connection.with_env(|env| Ok(env.new_string("local")?));
 /// }
 /// ```
@@ -136,8 +155,8 @@ pub trait ConnectionContract: Send + Sync + Sized {
 /// Even a scoped thread cannot receive the environment.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::ConnectionContract;
-/// fn share<C: ConnectionContract>(connection: &C) {
+/// use jvm_link_contract::Connection;
+/// fn share(connection: &Connection) {
 ///     let _ = connection.with_env(|env| {
 ///         std::thread::scope(|scope| { scope.spawn(move || { let _ = env.version(); }); });
 ///         Ok(())
@@ -148,8 +167,8 @@ pub trait ConnectionContract: Send + Sync + Sized {
 /// A local reference cannot be transferred to a scoped thread either.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::ConnectionContract;
-/// fn share<C: ConnectionContract>(connection: &C) {
+/// use jvm_link_contract::Connection;
+/// fn share(connection: &Connection) {
 ///     let _ = connection.with_env(|env| {
 ///         let local = env.new_string("local")?;
 ///         std::thread::scope(|scope| { scope.spawn(move || drop(local)); });

@@ -8,13 +8,16 @@ versions, including Java 8 and 17; those versions are not currently supported.
 
 ## Current status
 
-This is a design prototype with a compilable public contract, not a working JVM
-connection library. The temporary `jvm-link-contract` package is not publishable.
-Its trait describes future inherent methods on an opaque `Connection` and has no
-implementation. Internal Windows JVM discovery and thread attachment scopes are
-implemented and tested, including reference cleanup and exception normalization.
-Compatibility validation,
-connection lifecycle and publication remain future work.
+The non-publishable `jvm-link-contract` prototype now exposes an opaque
+`Connection`: unsafe discovery/admission of an existing Java 21 JVM, scoped
+operations and explicit retryable shutdown. It implements attachment ownership,
+reference cleanup and exception normalization. Publication remains future work.
+
+Call `unsafe { Connection::connect_existing() }` only while the host guarantees
+JVM/module liveness through every attachment and exported global, including
+globals in errors. Use `with_env` for operations and explicitly retry `close`
+before owner threads exit. A `ConnectionFailed` error retains the closing
+connection if constructor cleanup is outstanding; retry its `close` too.
 
 Crate configuration values live directly in the root `config.toml`, without
 sections; a single `Config` struct in `src/config.rs`
@@ -58,6 +61,20 @@ survives inner scopes, the Java thread remains attached, and the native thread i
 detached after each outer scope. Expected Rust panics are caught inside the
 adapter; their diagnostic output is normal. Injected detach failures and
 owner-thread retries are covered by unit tests, not by the real JVM.
+
+The host also exercises shutdown inside an operation, rejection of new scopes
+while closing, preservation of an active native scope and its local references,
+and repeated/concurrent close. Unit tests inject detach failures, including
+unwinding and destructor cleanup, and verify that another thread cannot detach
+the owner's attachment. Explicit close must finish on worker threads before they
+exit. Drop only attempts local cleanup; it performs no diagnostic I/O. Unreported
+cleanup failures survive successful detach and are returned by a later owner-thread
+close, even through another connection to the same VM. After observing such an
+error, call close again to finish the state transition.
+
+The host uses the exported constructor and lifecycle API on borrowed and detached
+threads. It also changes/removes `java.specification.version` to check admission
+and rejection paths; these are property tests on Java 21, not real Java 8/17 tests.
 
 The host also checks local-reference release on success, errors and unwinding,
 exported globals and throwable globals surviving frame exit and becoming
