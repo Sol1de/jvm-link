@@ -1,7 +1,43 @@
 //! Borrow an existing Java 21 JVM on Windows x64 without owning its lifetime.
+//!
+//! The host must already have loaded `jvm.dll` and started Java 21. This crate
+//! never creates or destroys a JVM. JNI types are reexported through [`jni`].
+//!
+//! ```no_run
+//! use jvm_link::{Connection, Result};
+//!
+//! // SAFETY: the host guarantees JVM and DLL liveness through all cleanup
+//! // and the release of exported globals, including globals held by errors.
+//! let connection = unsafe { Connection::connect_existing()? };
+//! let value = connection.with_env(|env| {
+//!     let local = env.new_string("hello from Rust")?;
+//!     Ok(local.try_to_string(env)?)
+//! })?;
+//! assert_eq!(value, "hello from Rust");
+//! connection.close()?;
+//! # Ok::<(), jvm_link::Error>(())
+//! ```
+//!
+//! Each synchronous [`Connection::with_env`] callback has a fresh local frame.
+//! Existing attachments are borrowed; detached threads are attached as daemons
+//! and detached on scope exit. Local environments and references cannot escape
+//! or cross threads. Owned Rust values and binding globals may escape.
+//!
+//! Call [`Connection::close`] before owner threads exit. It rejects new work,
+//! lets admitted operations finish and returns errors for busy or failed cleanup;
+//! retry on the owning thread. Drop only attempts cleanup. A failed constructor
+//! may return [`Error::ConnectionFailed`] with a connection requiring close.
+//! Globals and errors containing globals may outlive a closed connection, so
+//! the host-liveness obligation continues until they are released.
+//!
+//! Pending host exceptions are preserved. Operation exceptions are cleared and
+//! returned as [`Error::JavaException`], retaining their global throwable and
+//! any operation error. Cleanup errors retain ownership for explicit retry.
+//! With feature `jvmti`, sessions require the same cleanup discipline and expose
+//! no callbacks or event notifications.
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-compile_error!("The jvm-link contract targets Windows x64 only.");
+compile_error!("jvm-link targets Windows x64 only.");
 
 pub use connection::Connection;
 pub use jni;
@@ -128,7 +164,7 @@ impl std::error::Error for Error {
 /// A compiled consumer, without starting a JVM.
 ///
 /// ```
-/// use jvm_link_contract::{Connection, Result};
+/// use jvm_link::{Connection, Result};
 /// fn execute(connection: &Connection) -> Result<()> {
 ///     let _: i32 = connection.with_env(|_| Ok(42))?;
 ///     connection.with_env(|env| {
@@ -149,7 +185,7 @@ impl std::error::Error for Error {
 /// A local environment cannot escape the closure.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::Connection;
+/// use jvm_link::Connection;
 /// fn escape(connection: &Connection) {
 ///     let _env = connection.with_env(|env| Ok(env));
 /// }
@@ -158,7 +194,7 @@ impl std::error::Error for Error {
 /// A local reference cannot escape its frame.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::Connection;
+/// use jvm_link::Connection;
 /// fn escape(connection: &Connection) {
 ///     let _local = connection.with_env(|env| Ok(env.new_string("local")?));
 /// }
@@ -167,7 +203,7 @@ impl std::error::Error for Error {
 /// Even a scoped thread cannot receive the environment.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::Connection;
+/// use jvm_link::Connection;
 /// fn share(connection: &Connection) {
 ///     let _ = connection.with_env(|env| {
 ///         std::thread::scope(|scope| { scope.spawn(move || { let _ = env.version(); }); });
@@ -179,7 +215,7 @@ impl std::error::Error for Error {
 /// A local reference cannot be transferred to a scoped thread either.
 ///
 /// ```compile_fail
-/// use jvm_link_contract::Connection;
+/// use jvm_link::Connection;
 /// fn share(connection: &Connection) {
 ///     let _ = connection.with_env(|env| {
 ///         let local = env.new_string("local")?;

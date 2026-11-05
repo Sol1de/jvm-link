@@ -1,9 +1,20 @@
 [package]
-name = "jvm-link-contract"
-version = "0.0.0"
+name = "jvm-link"
+version = "0.1.0"
 edition = "2024"
-publish = false
-description = "Compilable JVM access contract with internal Windows discovery"
+license = "MIT"
+description = "Borrow an existing in-process Java 21 JVM on Windows x64"
+repository = "https://github.com/Sol1de/jvm-link"
+documentation = "https://docs.rs/jvm-link"
+readme = "README.md"
+keywords = ["java", "jni", "jvm", "windows"]
+categories = ["api-bindings"]
+include = ["/src/**", "/config.toml", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE", "/spec/**"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
+all-features = true
 
 [dependencies]
 jvmti-bindings = { version = "=3.0.2", optional = true, default-features = false }

@@ -1,0 +1,67 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+        features: [jni, jvmti]
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          architecture: x64
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Formatting
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --check --manifest-path tests/java21-host/Cargo.toml
+      - name: Check, lint, test, document and package
+        run: |
+          $cargoArgs = @('--locked', '--no-default-features')
+          if ('${{ matrix.features }}' -eq 'jvmti') { $cargoArgs += @('--features', 'jvmti') }
+          $packageArgs = $cargoArgs.Clone()
+          if ('${{ matrix.profile }}' -eq 'release') { $cargoArgs += '--release' }
+          cargo check @cargoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --all-targets @cargoArgs -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test @cargoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo doc --no-deps @cargoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo package @packageArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Java 21 host with checked JNI
+        run: |
+          $adapterArgs = @('--locked', '--manifest-path', 'tests/java21-host/Cargo.toml')
+          if ('${{ matrix.features }}' -eq 'jvmti') { $adapterArgs += @('--features', 'jvmti-checks') }
+          if ('${{ matrix.profile }}' -eq 'release') { $adapterArgs += '--release' }
+          cargo clippy --lib @adapterArgs -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hostArgs = @{ JavaHome = $env:JAVA_HOME }
+          if ('${{ matrix.features }}' -eq 'jvmti') { $hostArgs.Jvmti = $true }
+          if ('${{ matrix.profile }}' -eq 'release') { $hostArgs.Release = $true }
+          ./tests/java21-host/run.ps1 @hostArgs

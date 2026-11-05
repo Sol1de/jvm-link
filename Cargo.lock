@@ -96,8 +96,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "jvm-link-contract"
-version = "0.0.0"
+name = "jvm-link"
+version = "0.1.0"
 dependencies = [
  "jni",
  "jvmti-bindings",
