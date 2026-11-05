@@ -20,6 +20,16 @@ The host-liveness obligation includes global references stored inside errors.
 Exported globals may outlive the connection but never the JVM. They keep Java
 objects alive until released; consumers must control their lifetimes.
 
+Use the binding's `Global<T>` directly: it owns one JNI global reference, which
+its destructor deletes. It does not implement `Clone`; use `Arc<Global<T>>` if
+Rust consumers need shared ownership, or `Env::new_global_ref` to create another
+independently owned JNI global reference. Prefer dropping globals, including
+throwables in errors, inside an attached scope. On a detached thread the binding
+may temporarily attach to delete them, with its own cleanup behavior; these
+binding-managed attachments are not tracked as jvm-link scope ownership. Local
+references are released by the binding frame on success, errors and unwinding;
+dropping a plain local wrapper alone does not delete the JNI reference.
+
 ## Scoped execution
 
 1. Admit and count the scope under the same lock as the shutdown state. Release
@@ -57,8 +67,9 @@ The `jni_version` field in the root `config.toml`, read and validated by
 for these baseline invocation calls; this
 is an interface request, not Java runtime admission. Java 21 admission and the
 public connection lifecycle remain later work. The internal entry preserves an
-exception pending on entry; normalization of operation exceptions belongs to
-JL-4. The public trait remains a contract fixture until those layers are ready.
+exception pending on entry; JL-4 normalizes operation exceptions before frame
+release and detachment. The public trait remains a contract fixture until the
+connection layers are ready.
 
 In `jni` 0.22.4, `AttachConfig` does not expose the required daemon mode.
 `AttachGuard::drop` logs detach failures and explicit detachment consumes the

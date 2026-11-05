@@ -12,7 +12,8 @@ This is a design prototype with a compilable public contract, not a working JVM
 connection library. The temporary `jvm-link-contract` package is not publishable.
 Its trait describes future inherent methods on an opaque `Connection` and has no
 implementation. Internal Windows JVM discovery and thread attachment scopes are
-implemented and tested. Exception normalization, compatibility validation,
+implemented and tested, including reference cleanup and exception normalization.
+Compatibility validation,
 connection lifecycle and publication remain future work.
 
 Crate configuration values live directly in the root `config.toml`, without
@@ -57,3 +58,15 @@ survives inner scopes, the Java thread remains attached, and the native thread i
 detached after each outer scope. Expected Rust panics are caught inside the
 adapter; their diagnostic output is normal. Injected detach failures and
 owner-thread retries are covered by unit tests, not by the real JVM.
+
+The host also checks local-reference release on success, errors and unwinding,
+exported globals and throwable globals surviving frame exit and becoming
+collectible after release, and pending exceptions preserved by identity on entry.
+Operation exceptions are captured even after `Ok`, with their original operation
+errors retained. A test-only JNI table override injects failed `NewGlobalRef`
+allocation both with and without a pending `OutOfMemoryError`, without exhausting
+the host heap. It also checks failed `PushLocalFrame` allocation: the callback
+never runs, the frame error and throwable are retained, and no exception remains
+pending. Capture failures preserve the typed JNI cause. Exception capture avoids
+Java diagnostic calls; see
+[lifecycle](spec/lifecycle.md) for error and destruction semantics.

@@ -4,20 +4,35 @@
 
 - If a Java exception is pending on entry, return `PendingJavaException` without
   running the closure or clearing that exception. The host owns its handling.
-- Capture exceptions produced by an operation using the binding's mechanisms,
-  clear their pending state and return a structured error. A `CaughtJavaException`
-  carries a global throwable and context. Check on exit even if the closure returns
-  `Ok`.
+- Capture exceptions produced by an operation using the binding's references,
+  clear their pending state and return `JavaException { throwable, operation }`.
+  The throwable is a binding `Global<JThrowable>`; `operation` retains any error
+  returned by the closure, including its original JNI cause. Check on exit even
+  if the closure returns `Ok`. Already-caught binding errors, including
+  `CaughtJavaException`, pass through unchanged when no exception is pending.
 - If both an operation and detachment fail, `Cleanup` retains both errors and the
   owning thread identifier.
-- If exception capture itself fails, preserve the primary JNI error without
-  pretending to have recovered a throwable. Test allocation failure in particular.
+- If throwable promotion fails, return `ExceptionCapture { source, operation }`
+  with the typed JNI capture cause and original operation error. Clear any
+  secondary pending exception before cleanup; no throwable is claimed recovered.
+  Test allocation failure in particular.
 - A Rust panic continues unwinding after cleanup; never convert it into success.
   Retain any cleanup failure during unwinding in connection state for `close()`
   to report.
 
 Reuse binding capture/rethrow facilities without silently clearing an exception
 owned by the host. See the [binding errors](https://docs.rs/jni/0.22.4/jni/errors/enum.Error.html).
+
+The internal scope uses `exception_occurred`, `exception_clear` and
+`new_global_ref`. It explicitly releases the temporary throwable local, including
+when frame allocation failed. Unlike `jni` 0.22.4's `exception_catch`, this keeps
+promotion errors typed rather than substituting an error containing a null global.
+It does not call Java for diagnostic strings or stack traces during capture;
+consumers can inspect or rethrow the retained throwable in a later scope. The
+throwable itself provides the Java failure context. During Rust unwinding, the
+scope clears operation exceptions and drops their temporary globals before frame
+cleanup, then resumes the original panic. No operation callback runs on a pending
+entry exception. Frame allocation errors are normalized before detachment too.
 
 ## Shutdown state
 

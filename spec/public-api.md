@@ -48,6 +48,9 @@ Public error enums are non-exhaustive. They distinguish:
 - A closing/closed connection or still-active scopes.
 - An exception already pending before an operation.
 - Attachment, frame and operation errors retaining their typed JNI causes.
+- Operation exceptions retaining a binding global throwable and any simultaneous
+  operation error (`JavaException`); failed promotion retaining its typed JNI
+  cause and operation error (`ExceptionCapture`).
 - Cleanup failure with the owning thread and any simultaneous operation error.
 - Pending cleanup owned by other threads.
 

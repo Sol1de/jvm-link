@@ -144,25 +144,97 @@ pub(crate) unsafe fn with_env<T>(
 ) -> Result<T> {
     let mut attachment = unsafe { Attachment::enter(vm)? };
     let result = {
-        // The binding guard borrows only; our guard alone owns detachment.
         let mut borrowed = unsafe { AttachGuard::from_unowned(attachment.env.as_ptr()) };
         let env = borrowed.borrow_env_mut();
         if env.exception_check() {
             Err(Error::PendingJavaException)
         } else {
-            // shortcut: operation exception normalization awaits JL-4 before public exposure.
-            env.with_local_frame(32, |env| Ok::<_, jni::errors::Error>(operation(env)))
+            let result = env
+                .with_local_frame(32, |env| {
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(env)));
+                    let exception = capture_exception(env);
+                    match result {
+                        Ok(result) => {
+                            Ok::<_, jni::errors::Error>(normalize_exception(result, exception))
+                        }
+                        Err(payload) => std::panic::resume_unwind(payload),
+                    }
+                })
                 .map_err(Error::Frame)
-                .and_then(|result| result)
+                .and_then(|result| result);
+
+            let exception = capture_exception(env);
+            normalize_exception(result, exception)
         }
     };
     attachment.finish(result)
+}
+
+fn capture_exception(
+    env: &mut Env<'_>,
+) -> jni::errors::Result<Option<jni::refs::Global<jni::objects::JThrowable<'static>>>> {
+    let Some(throwable) = env.exception_occurred() else {
+        return Ok(None);
+    };
+    env.exception_clear();
+    let result = env.new_global_ref(&throwable).map(Some);
+    env.delete_local_ref(throwable);
+    env.exception_clear();
+    result
+}
+
+fn normalize_exception<T>(
+    result: Result<T>,
+    exception: jni::errors::Result<Option<jni::refs::Global<jni::objects::JThrowable<'static>>>>,
+) -> Result<T> {
+    match exception {
+        Ok(None) => result,
+        Ok(Some(throwable)) => Err(Error::JavaException {
+            throwable,
+            operation: result.err().map(Box::new),
+        }),
+        Err(source) => Err(Error::ExceptionCapture {
+            source,
+            operation: result.err().map(Box::new),
+        }),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{ffi::c_void, ptr};
+
+    #[test]
+    fn exception_capture_failure_retains_typed_cause_and_operation() {
+        let result = normalize_exception::<()>(
+            Err(Error::Operation(jni::errors::Error::JavaException)),
+            Err(jni::errors::Error::JniCall(jni::errors::JniError::NoMemory)),
+        );
+        assert!(matches!(result, Err(Error::ExceptionCapture {
+            source: jni::errors::Error::JniCall(jni::errors::JniError::NoMemory),
+            operation: Some(error),
+        }) if matches!(*error, Error::Operation(jni::errors::Error::JavaException))));
+        assert_eq!(normalize_exception(Ok(42), Ok(None)).unwrap(), 42);
+    }
+
+    #[test]
+    fn detach_failure_retains_exception_capture_error() {
+        fixture(false, |vm| unsafe {
+            let mut attachment = Attachment::enter(vm).unwrap();
+            MOCK.with(|m| m.borrow_mut().detach_code = sys::JNI_ERR);
+            let operation = normalize_exception::<()>(
+                Err(Error::Closing),
+                Err(jni::errors::Error::JniCall(jni::errors::JniError::NoMemory)),
+            );
+            assert!(matches!(attachment.finish(operation),
+                Err(Error::Cleanup { operation: Some(error), .. })
+                if matches!(*error, Error::ExceptionCapture { operation: Some(_), .. })));
+            MOCK.with(|m| m.borrow_mut().detach_code = 0);
+            retry_cleanup(vm).unwrap();
+        });
+    }
 
     struct Mock {
         attached: bool,

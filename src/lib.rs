@@ -7,7 +7,6 @@ compile_error!("The jvm-link contract targets Windows x64 only.");
 pub use jni;
 use std::thread::ThreadId;
 
-// The connection runtime will consume this module in the next implementation stage.
 #[allow(dead_code)]
 mod config;
 #[allow(dead_code)]
@@ -47,6 +46,16 @@ pub enum Error {
     Attach(jni::errors::Error),
     Frame(jni::errors::Error),
     Operation(jni::errors::Error),
+    /// An operation's pending exception, cleared and retained as a binding global.
+    JavaException {
+        throwable: jni::refs::Global<jni::objects::JThrowable<'static>>,
+        operation: Option<Box<Error>>,
+    },
+    /// Throwable promotion failed; no global was recovered. Retains the JNI cause.
+    ExceptionCapture {
+        source: jni::errors::Error,
+        operation: Option<Box<Error>>,
+    },
     Cleanup {
         owner: ThreadId,
         source: jni::errors::Error,
@@ -96,6 +105,11 @@ pub trait ConnectionContract: Send + Sync + Sized {
 ///         let _local = env.new_string("local")?;
 ///         Ok(())
 ///     })?;
+///     let global = connection.with_env(|env| {
+///         let local = env.new_string("exported global")?;
+///         Ok(env.new_global_ref(&local)?)
+///     })?;
+///     std::thread::spawn(move || drop(global)).join().unwrap();
 ///     connection.close()?;
 ///     connection.close()
 /// }
