@@ -9,6 +9,10 @@ use std::thread::ThreadId;
 
 // The connection runtime will consume this module in the next implementation stage.
 #[allow(dead_code)]
+mod config;
+#[allow(dead_code)]
+mod scope;
+#[allow(dead_code)]
 mod vm_lookup;
 
 pub type Result<T> = std::result::Result<T, Error>;

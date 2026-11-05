@@ -18,8 +18,8 @@ API compatibility review. Version 0.22 uses `Env` and `Global<T>`; do not copy
 
 ## Module boundaries
 
-The prototype contains `src/lib.rs` and the private `src/vm_lookup.rs` discovery
-module. The intended runtime layout is:
+The prototype contains `src/lib.rs`, private JVM discovery and attachment scope
+modules, and embedded configuration. The intended runtime layout is:
 
 | Module | Responsibility |
 | --- | --- |
@@ -27,11 +27,25 @@ module. The intended runtime layout is:
 | `connection.rs` | Opaque borrowed connection, scope admission and shutdown state. |
 | `vm_lookup.rs` | Resolve the lookup symbol in the loaded DLL and validate VM results. |
 | `scope.rs` | Thread attachments, local frames and cleanup guards. |
-| `compatibility.rs` | Java identification, JNI versions and checked capabilities. |
+| `config.rs` | Configuration loading, types and validation. |
 | `error.rs` | Structured public errors. |
 
 Keep internals private. Replace the prototype trait with inherent methods on
 `Connection` as the runtime is implemented, preserving its contract checks.
+
+Configuration values live directly in the root `config.toml`, without sections.
+`src/config.rs` uses a single `Config` struct and embeds the file with `include_str!`,
+deserializes it once on first use,
+and caches the validated typed configuration with `OnceLock`. No file is read
+from the host's working directory. Changes require recompilation. Missing fields,
+unknown fields, invalid TOML and unsupported JNI interface versions are rejected;
+invalid embedded configuration panics before any scope JNI call, without a
+fallback. Unit tests validate the shipped file. TOML and Serde provide parsing
+and typed validation rather than a custom parser.
+
+Only JNI 1.8 is currently configured and accepted for baseline calls. This does
+not identify or admit a Java runtime. Adding a configuration file or field does
+not itself implement a new compatibility policy or capability check.
 
 ## JVM lookup and execution
 

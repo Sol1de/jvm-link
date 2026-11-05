@@ -11,8 +11,14 @@ versions, including Java 8 and 17; those versions are not currently supported.
 This is a design prototype with a compilable public contract, not a working JVM
 connection library. The temporary `jvm-link-contract` package is not publishable.
 Its trait describes future inherent methods on an opaque `Connection` and has no
-implementation. Internal Windows JVM discovery is implemented and tested; scopes,
-compatibility validation, connection lifecycle and publication remain future work.
+implementation. Internal Windows JVM discovery and thread attachment scopes are
+implemented and tested. Exception normalization, compatibility validation,
+connection lifecycle and publication remain future work.
+
+Crate configuration values live directly in the root `config.toml`, without
+sections; a single `Config` struct in `src/config.rs`
+loads and validates them once. The file is embedded at compilation, so no runtime
+configuration file is required. Editing it requires rebuilding the crate.
 
 - [Specifications](spec/README.md): scope, architecture, API, ownership and lifecycle.
 - [Compilable contract and doctests](src/lib.rs).
@@ -45,4 +51,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/java21-host/run.ps1 -J
 
 This uses a process-local script execution policy and does not change system
 settings. Java starts and owns the technical JVM; the library never creates or
-destroys it. This test does not validate attachment, scopes or cleanup.
+destroys it. The same host checks borrowed Java-thread scopes and native daemon
+scopes, nested frames, early errors and Rust unwinding. The outer local reference
+survives inner scopes, the Java thread remains attached, and the native thread is
+detached after each outer scope. Expected Rust panics are caught inside the
+adapter; their diagnostic output is normal. Injected detach failures and
+owner-thread retries are covered by unit tests, not by the real JVM.
