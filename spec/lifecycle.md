@@ -78,6 +78,26 @@ is shared per VM, `CleanupPending` may also
 report an attachment still active through another connection, including the
 calling thread; it is never detached while its scope depth is nonzero.
 
+## Optional JVMTI disposal
+
+Session close retains its exact owned environment until `DisposeEnvironment`
+returns success. Capability errors also retain ownership. A successful disposal
+clears the pointer before scope cleanup, so a failed detach cannot cause a second
+disposal of an invalid environment. Keep the session and retry close on errors;
+the connection stays busy until session close succeeds or the session is dropped.
+Drop makes one non-panicking close attempt. On failure it transfers the exact
+remaining environment and error to the existing per-VM, owner-thread registry,
+before releasing its admission. Connection close retries that queue on its owner
+thread without holding the registry lock across JNI/JVMTI. Other threads report
+`CleanupPending`, including while a retry is in progress. A successful retry
+still reports each retained error once; call close again to complete shutdown.
+Connection Drop may retry resources but never consumes their unreported errors.
+The queue survives connection destruction and is available through a later
+connection to the same VM. No thread-local JNI environment is stored or shared.
+Explicit close must finish before the owner thread exits; a departed owner cannot
+be repaired remotely. Host liveness must cover retained environments and errors.
+No connection or session cleanup destroys the JVM.
+
 ## Required runtime checks
 
 Test borrowed Java threads and native daemon attachments, nested scopes, early

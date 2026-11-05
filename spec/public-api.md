@@ -38,6 +38,26 @@ under this constructor precondition. See [ownership](ownership.md).
 
 ## Structured errors
 
+With the optional `jvmti` feature, `connection.jvmti_session()` reserves a
+current-thread `JvmtiSession` borrowing that connection. It performs no JVMTI
+call until `session.open(&JvmtiCapabilities)`; pass `Default::default()` for no
+capabilities. Repeated open calls add only explicitly requested capabilities to
+the same environment. A failed open leaves the session available for cleanup,
+including capability rejection or simultaneous attachment cleanup failure.
+`session.close(&mut self)` is explicit, idempotent and retryable. Closing prohibits
+further open calls. The session exposes neither callbacks nor a raw handle and
+cannot be transferred or shared between threads. `JvmtiCapabilities` reuses the
+binding bitfield type; unsupported requests are left to the host to reject.
+Failed Drop cleanup remains owned in the VM cleanup registry. Retry connection
+close on the session's thread, using the original or a later connection to that
+VM. A remote thread receives `CleanupPending`. Successful disposal does not hide
+an unreported Drop error: observe it, then close again to finish.
+
+JVMTI function failures return `Jvmti { operation, code }`, retaining the numeric
+JVMTI code (including unknown codes); malformed pointers or absent function slots
+return `InvalidJvmtiEnvironment`. GetEnv failures retain their typed JNI cause
+as `Operation`. These variants and exports exist only with the feature enabled.
+
 Public error enums are non-exhaustive. They distinguish:
 
 - JVM lookup failures: module/symbol absent, no VM, invalid VM pointer, multiple

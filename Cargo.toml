@@ -6,6 +6,11 @@ publish = false
 description = "Compilable JVM access contract with internal Windows discovery"
 
 [dependencies]
+jvmti-bindings = { version = "=3.0.2", optional = true, default-features = false }
 jni = { version = "=0.22.4", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = { version = "1.2.0", default-features = false, features = ["parse", "serde", "std"] }
+
+[features]
+default = []
+jvmti = ["dep:jvmti-bindings"]

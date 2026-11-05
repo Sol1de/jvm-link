@@ -12,6 +12,11 @@ mod connection;
 mod scope;
 mod vm_lookup;
 
+#[cfg(feature = "jvmti")]
+mod jvmti;
+#[cfg(feature = "jvmti")]
+pub use jvmti::{JvmtiCapabilities, JvmtiSession};
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Existing JVM lookup errors from the internal `vm_lookup` module.
@@ -30,6 +35,13 @@ pub enum DiscoveryError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
+    #[cfg(feature = "jvmti")]
+    Jvmti {
+        operation: &'static str,
+        code: i32,
+    },
+    #[cfg(feature = "jvmti")]
+    InvalidJvmtiEnvironment,
     Discovery(DiscoveryError),
     /// Validation failed with outstanding cleanup. Only `close` is permitted on
     /// the retained connection; retry on the owning thread before releasing it.

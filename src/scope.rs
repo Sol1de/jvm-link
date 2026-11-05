@@ -21,6 +21,20 @@ struct State {
 struct Owner {
     attached: bool,
     error: Option<Error>,
+    #[cfg(feature = "jvmti")]
+    jvmti: Vec<crate::jvmti::Pending>,
+    #[cfg(feature = "jvmti")]
+    jvmti_active: bool,
+}
+
+impl Owner {
+    fn is_empty(&self) -> bool {
+        #[cfg(feature = "jvmti")]
+        if !self.jvmti.is_empty() || self.jvmti_active {
+            return false;
+        }
+        !self.attached && self.error.is_none()
+    }
 }
 
 thread_local! {
@@ -161,7 +175,7 @@ pub(crate) unsafe fn retry_cleanup(vm: NonNull<sys::JavaVM>) -> Result<()> {
 
             if let Some(state) = threads.get_mut(&owner) {
                 state.attached = false;
-                if state.error.is_none() {
+                if state.is_empty() {
                     threads.remove(&owner);
                 }
             }
@@ -279,7 +293,7 @@ pub(crate) fn take_cleanup_error(vm: NonNull<sys::JavaVM>) -> Option<Error> {
     let state = threads.get_mut(&owner)?;
     let error = state.error.take();
 
-    if !state.attached {
+    if state.is_empty() {
         threads.remove(&owner);
     }
 
@@ -287,6 +301,69 @@ pub(crate) fn take_cleanup_error(vm: NonNull<sys::JavaVM>) -> Option<Error> {
         owners.remove(&key);
     }
     error
+}
+
+#[cfg(feature = "jvmti")]
+pub(crate) fn retain_jvmti(vm: NonNull<sys::JavaVM>, pending: crate::jvmti::Pending) {
+    owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(vm.as_ptr() as usize)
+        .or_default()
+        .entry(std::thread::current().id())
+        .or_default()
+        .jvmti
+        .push(pending);
+}
+
+// Keep the owner visible to concurrent shutdown while its queue is outside the lock.
+#[cfg(feature = "jvmti")]
+pub(crate) struct JvmtiCleanup {
+    vm: NonNull<sys::JavaVM>,
+    pub(crate) pending: Vec<crate::jvmti::Pending>,
+}
+
+#[cfg(feature = "jvmti")]
+pub(crate) fn take_jvmti(vm: NonNull<sys::JavaVM>) -> Result<Option<JvmtiCleanup>> {
+    let mut registry = owners().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(state) = registry
+        .get_mut(&(vm.as_ptr() as usize))
+        .and_then(|threads| threads.get_mut(&std::thread::current().id()))
+    else {
+        return Ok(None);
+    };
+    if state.jvmti_active {
+        return Err(Error::CleanupPending {
+            owners: vec![std::thread::current().id()],
+        });
+    }
+    if state.jvmti.is_empty() {
+        return Ok(None);
+    }
+    state.jvmti_active = true;
+    Ok(Some(JvmtiCleanup {
+        vm,
+        pending: std::mem::take(&mut state.jvmti),
+    }))
+}
+
+#[cfg(feature = "jvmti")]
+impl Drop for JvmtiCleanup {
+    fn drop(&mut self) {
+        let mut registry = owners().lock().unwrap_or_else(|e| e.into_inner());
+        let key = self.vm.as_ptr() as usize;
+        let owner = std::thread::current().id();
+        let threads = registry.get_mut(&key).unwrap();
+        let state = threads.get_mut(&owner).unwrap();
+        state.jvmti.append(&mut self.pending);
+        state.jvmti_active = false;
+        if state.is_empty() {
+            threads.remove(&owner);
+        }
+        if threads.is_empty() {
+            registry.remove(&key);
+        }
+    }
 }
 
 #[cfg(test)]

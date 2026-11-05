@@ -4,6 +4,10 @@ use jvm_link_contract::{Connection, DiscoveryError, Error, Result};
 #[path = "../../../src/config.rs"]
 mod config;
 #[path = "../../../src/scope.rs"]
+#[allow(
+    unexpected_cfgs,
+    reason = "The private JNI fixture stays JNI-only; JVMTI tests use the public library."
+)]
 mod scope;
 
 #[path = "../../../src/vm_lookup.rs"]
@@ -27,6 +31,8 @@ pub unsafe extern "system" fn Java_DiscoveryHost_check(
         }
         let vm = std::ptr::NonNull::new(expected).unwrap();
         exercise_shutdown(vm);
+        #[cfg(feature = "jvmti-checks")]
+        exercise_jvmti(vm);
         exercise_scopes(vm, false);
         let address = expected as usize;
         std::thread::spawn(move || {
@@ -34,6 +40,8 @@ pub unsafe extern "system" fn Java_DiscoveryHost_check(
             let connection = Connection::connect_existing().unwrap();
             assert_eq!(status(vm), jni::sys::JNI_EDETACHED);
             connection.close().unwrap();
+            #[cfg(feature = "jvmti-checks")]
+            exercise_jvmti(vm);
             exercise_scopes(vm, true);
             assert!(scope::cleanup_owners(vm).is_empty());
             assert!(scope::take_cleanup_error(vm).is_none());
@@ -138,6 +146,65 @@ unsafe fn exercise_shutdown(vm: std::ptr::NonNull<jni::sys::JavaVM>) {
 unsafe fn status(vm: std::ptr::NonNull<jni::sys::JavaVM>) -> i32 {
     let mut env = std::ptr::null_mut();
     unsafe { ((**vm.as_ptr()).v1_2.GetEnv)(vm.as_ptr(), &mut env, config::get().jni_version()) }
+}
+
+#[cfg(feature = "jvmti-checks")]
+unsafe fn exercise_jvmti(vm: std::ptr::NonNull<jni::sys::JavaVM>) {
+    use jvm_link_contract::JvmtiCapabilities;
+    let before = unsafe { status(vm) };
+    let connection = unsafe { Connection::connect_existing().unwrap() };
+    let mut session = connection.jvmti_session().unwrap();
+    session.open(&JvmtiCapabilities::default()).unwrap();
+    let mut caps = JvmtiCapabilities::default();
+    caps.set_can_tag_objects(true);
+    session.open(&caps).unwrap();
+    assert_eq!(unsafe { status(vm) }, before);
+    assert!(matches!(
+        connection.close(),
+        Err(Error::Busy { active_scopes: 1 })
+    ));
+    session.close().unwrap();
+    session.close().unwrap();
+    connection.close().unwrap();
+    assert_eq!(unsafe { status(vm) }, before);
+
+    let connection = unsafe { Connection::connect_existing().unwrap() };
+    let mut session = connection.jvmti_session().unwrap();
+    session.open(&JvmtiCapabilities::default()).unwrap();
+    drop(session);
+    connection.close().unwrap();
+    assert_eq!(unsafe { status(vm) }, before);
+
+    let connection = unsafe { Connection::connect_existing().unwrap() };
+    let failure = connection.with_env::<()>(|env| {
+        let mut session = connection.jvmti_session()?;
+        session.open(&JvmtiCapabilities::default())?;
+        env.throw_new(
+            jni::jni_str!("java/lang/IllegalStateException"),
+            jni::jni_str!("exception during JVMTI session"),
+        )?;
+        Ok(())
+    });
+    let Err(Error::JavaException { throwable, .. }) = failure else {
+        panic!("missing Java exception after session Drop");
+    };
+    connection
+        .with_env(|env| {
+            assert!(!env.exception_check());
+            assert_eq!(
+                throwable.get_message(env)?.try_to_string(env)?,
+                "exception during JVMTI session"
+            );
+            drop(throwable);
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        connection.close(),
+        Err(Error::PendingJavaException)
+    ));
+    connection.close().unwrap();
+    assert_eq!(unsafe { status(vm) }, before);
 }
 
 unsafe fn exercise_scopes(vm: std::ptr::NonNull<jni::sys::JavaVM>, native: bool) {

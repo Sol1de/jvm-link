@@ -100,9 +100,16 @@ name = "jvm-link-contract"
 version = "0.0.0"
 dependencies = [
  "jni",
+ "jvmti-bindings",
  "serde",
  "toml",
 ]
+
+[[package]]
+name = "jvmti-bindings"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe66104d0666e97ebcdda2a31ef46270fdb2452637d48796f828c4f238bf5303"
 
 [[package]]
 name = "log"

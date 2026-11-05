@@ -30,6 +30,20 @@ configuration file is required. Editing it requires rebuilding the crate.
 
 ## Checks
 
+Optional JVMTI sessions are enabled with `--features jvmti`. Reserve a session
+with `connection.jvmti_session()`, open it with explicit `JvmtiCapabilities`, and
+explicitly retry its `close()` on errors before closing the connection. Opening
+is separate from reservation so failures cannot hide an environment needing
+cleanup. No callbacks or event notifications are installed. Failed Drop cleanup
+retains the same environment and error in the VM's owner-thread registry. Retry
+`Connection::close()` on that thread, even through a later connection to the same
+VM. A different thread reports `CleanupPending`. See the specifications for ownership.
+
+Run the checks below both with and without `--features jvmti` (formatting is shared).
+The technical host accepts `-Jvmti` to exercise sessions on borrowed Java threads
+and detached native threads, capability requests, explicit/repeated close and Drop.
+Disposal failures and pointer validation use injected unit tests.
+
 Run from the project root on Windows x64:
 
 ```powershell

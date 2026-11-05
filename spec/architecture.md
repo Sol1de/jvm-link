@@ -113,7 +113,14 @@ dedicated real-host tests. Connection API and ownership rules remain shared.
 
 ## Optional JVMTI
 
-If implemented, put JVMTI behind a separate Cargo feature with an owned environment,
-explicit capability requests and no callbacks by default. Define callback lifecycle
-requirements if a consumer later needs them. Failed `DisposeEnvironment` must
-retain the same environment for retry; the JNI core must work without this feature.
+The disabled-by-default `jvmti` Cargo feature enables private `src/jvmti.rs`.
+It uses only the raw JVMTI types from pinned `jvmti-bindings` 3.0.2; JNI environments,
+references, frames and attachment ownership continue to use `jni` 0.22.4.
+The baseline interface request is JVMTI 21, distinct from JNI 1.8 and Java admission.
+`GetEnv` codes, environment/table pointers and required function slots are checked.
+No agent entry points, callback registration or event notifications are installed.
+See the [Java 21 JVMTI specification](https://docs.oracle.com/en/java/javase/21/docs/specs/jvmti.html).
+
+Future callback support requires a separate design for callback state lifetime,
+thread attachment, reentrancy, panic containment, disabling events and draining
+in-flight callbacks before disposal or library unloading. It is outside this API.

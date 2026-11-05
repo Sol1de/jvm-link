@@ -1,10 +1,12 @@
-param([Parameter(Mandatory = $true)][string]$JavaHome)
+param([Parameter(Mandatory = $true)][string]$JavaHome, [switch]$Jvmti)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $outputDir = Join-Path $projectRoot 'target\java21-host'
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
-cargo build --locked --manifest-path "$PSScriptRoot\Cargo.toml" --target-dir "$projectRoot\target"
+$featureArgs = @()
+if ($Jvmti) { $featureArgs = @('--features', 'jvmti-checks') }
+cargo build --locked --manifest-path "$PSScriptRoot\Cargo.toml" --target-dir "$projectRoot\target" @featureArgs
 if ($LASTEXITCODE -ne 0) { throw 'Technical JNI adapter build failed' }
 & "$JavaHome\bin\javac.exe" -d $outputDir "$PSScriptRoot\DiscoveryHost.java"
 if ($LASTEXITCODE -ne 0) { throw 'Technical Java host compilation failed' }

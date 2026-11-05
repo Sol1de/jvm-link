@@ -17,6 +17,15 @@ its current thread and local frame, following the
 | Exported global reference | Binding consumer | Binding-defined destruction, before host shutdown. |
 
 The host-liveness obligation includes global references stored inside errors.
+With `jvmti`, a session owns its environment and borrows its connection until
+explicit close or Drop. Its reservation counts as active work, so connection
+shutdown returns `Busy` while it exists. Session operations use the shared JNI
+scope machinery for attachment and exception handling; no JNI environment is
+stored. A session remains usable for cleanup when its connection is Closing.
+Failed session Drop transfers ownership and the error to the VM's cleanup registry.
+The same owner thread retries through connection close; environments and errors
+survive connection Drop. Other threads can inspect ownership but cannot take the
+queue. While a retry runs outside the lock its owner remains visible to shutdown.
 Exported globals may outlive the connection but never the JVM. They keep Java
 objects alive until released; consumers must control their lifetimes.
 
@@ -73,10 +82,11 @@ release and detachment. Public lifetime/thread checks now target `Connection`.
 JL-5 adds `src/connection.rs`: an opaque public connection which discovers the
 host VM and validates compatibility at its unsafe constructor. A short mutex-protected admission guard counts
 scopes and releases its count after attachment cleanup, including unwinding.
-No connection lock spans JNI or callbacks. A process-wide registry records only
+No connection lock spans JNI or callbacks. A process-wide registry records
 VM addresses, owning thread IDs and unreported cleanup errors, from successful
 daemon attachment through successful detachment and error observation.
-It shares no environment and tracks ownership across
+With JVMTI enabled it also retains failed session cleanup handles and errors.
+It shares no JNI environment and tracks ownership across
 connections to the same VM. Closing another connection cannot detach an active
 outer scope; it reports `CleanupPending` until that owner finishes.
 

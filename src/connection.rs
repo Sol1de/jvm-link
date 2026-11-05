@@ -39,6 +39,7 @@ impl Connection {
     /// # Safety
     /// The host must keep its JVM and jvm.dll alive until all scopes, attachments
     /// and exported globals, including those held by errors, are released.
+    /// With JVMTI enabled this includes sessions and retained JVMTI cleanup.
     /// This also applies after failure, including a `ConnectionFailed` error.
     pub unsafe fn connect_existing() -> Result<Self> {
         let vm = unsafe { vm_lookup::discover() }.map_err(Error::Discovery)?;
@@ -112,6 +113,13 @@ impl Connection {
         unsafe { scope::with_env(self.vm, operation) }
     }
 
+    /// Reserves an optional session; call its `open` with explicit capabilities.
+    /// The reservation keeps `close` busy until the session closes or is dropped.
+    #[cfg(feature = "jvmti")]
+    pub fn jvmti_session(&self) -> Result<crate::JvmtiSession<'_>> {
+        Ok(crate::JvmtiSession::new(self.vm, self.admit()?))
+    }
+
     /// Closes without waiting for active scopes. Retry on `Busy` or cleanup errors.
     /// Only the owning thread can retry a failed detach. Repeated success is a no-op.
     /// A retained unwind/Drop failure is reported even if this retry succeeds;
@@ -130,6 +138,8 @@ impl Connection {
             }
         }
         // No connection lock spans JNI, even when close is reentered.
+        #[cfg(feature = "jvmti")]
+        unsafe { crate::jvmti::retry_pending(self.vm, true) }?;
         let retained = scope::take_cleanup_error(self.vm);
         let cleanup = unsafe { scope::retry_cleanup(self.vm) };
         match (cleanup, retained) {
@@ -152,7 +162,7 @@ impl Connection {
     }
 }
 
-struct Admission<'a>(&'a Connection);
+pub(crate) struct Admission<'a>(&'a Connection);
 
 impl Drop for Admission<'_> {
     fn drop(&mut self) {
@@ -162,6 +172,8 @@ impl Drop for Admission<'_> {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        #[cfg(feature = "jvmti")]
+        let _ = unsafe { crate::jvmti::retry_pending(self.vm, false) };
         let state = self.state.get_mut().unwrap_or_else(|e| e.into_inner());
         if !matches!(state.phase, Phase::Closed)
             && let Err(error) = unsafe { scope::retry_cleanup(self.vm) }
