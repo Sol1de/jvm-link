@@ -20,6 +20,7 @@ JVMTI is optional and separate from the required JNI core.
 | [Public API](public-api.md) | Connection operations, error categories and the compilable contract. |
 | [Ownership](ownership.md) | Host lifetime, thread attachments, local frames and global references. |
 | [Lifecycle](lifecycle.md) | Exception handling, cleanup, shutdown and retries. |
+| [Release validation](release.md) | Validation matrix, package contents and publication procedure. |
 
 [src/lib.rs](../src/lib.rs) is the authoritative compilable signature definition.
 The API specification explains it without maintaining a second full code copy.

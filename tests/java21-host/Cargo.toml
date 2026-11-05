@@ -6,12 +6,14 @@ publish = false
 
 [lib]
 crate-type = ["cdylib"]
+test = false
+doctest = false
 
 [dependencies]
-jvm-link-contract = { path = "../.." }
+jvm-link = { path = "../.." }
 jni = { version = "=0.22.4", default-features = false }
 toml = { version = "1.2.0", default-features = false, features = ["parse", "serde", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [features]
-jvmti-checks = ["jvm-link-contract/jvmti"]
+jvmti-checks = ["jvm-link/jvmti"]

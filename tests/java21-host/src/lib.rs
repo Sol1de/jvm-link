@@ -1,5 +1,5 @@
 //! Technical Java 21 adapter: compiles private discovery and scope modules unchanged.
-use jvm_link_contract::{Connection, DiscoveryError, Error, Result};
+use jvm_link::{Connection, DiscoveryError, Error, Result};
 
 #[path = "../../../src/config.rs"]
 mod config;
@@ -30,6 +30,7 @@ pub unsafe extern "system" fn Java_DiscoveryHost_check(
             assert_eq!(vm_lookup::discover().unwrap().as_ptr(), expected);
         }
         let vm = std::ptr::NonNull::new(expected).unwrap();
+        exercise_cycles(vm);
         exercise_shutdown(vm);
         #[cfg(feature = "jvmti-checks")]
         exercise_jvmti(vm);
@@ -40,6 +41,7 @@ pub unsafe extern "system" fn Java_DiscoveryHost_check(
             let connection = Connection::connect_existing().unwrap();
             assert_eq!(status(vm), jni::sys::JNI_EDETACHED);
             connection.close().unwrap();
+            exercise_cycles(vm);
             #[cfg(feature = "jvmti-checks")]
             exercise_jvmti(vm);
             exercise_scopes(vm, true);
@@ -148,9 +150,39 @@ unsafe fn status(vm: std::ptr::NonNull<jni::sys::JavaVM>) -> i32 {
     unsafe { ((**vm.as_ptr()).v1_2.GetEnv)(vm.as_ptr(), &mut env, config::get().jni_version()) }
 }
 
+unsafe fn exercise_cycles(vm: std::ptr::NonNull<jni::sys::JavaVM>) {
+    let before = unsafe { status(vm) };
+    for _ in 0..32 {
+        let connection = unsafe { Connection::connect_existing().unwrap() };
+        assert_eq!(unsafe { status(vm) }, before);
+        for _ in 0..8 {
+            let value = connection
+                .with_env(|env| {
+                    let local = env.new_string("repeated public scope")?;
+                    connection.with_env(|inner| {
+                        let _local = inner.new_string("nested public scope")?;
+                        Ok(())
+                    })?;
+                    local.try_to_string(env).map_err(Error::from)
+                })
+                .unwrap();
+            assert_eq!(value, "repeated public scope");
+            assert_eq!(unsafe { status(vm) }, before);
+        }
+        connection.close().unwrap();
+        connection.close().unwrap();
+        assert!(matches!(
+            connection.with_env(|_| Ok(())),
+            Err(Error::Closed)
+        ));
+        drop(connection);
+        assert_eq!(unsafe { status(vm) }, before);
+    }
+}
+
 #[cfg(feature = "jvmti-checks")]
 unsafe fn exercise_jvmti(vm: std::ptr::NonNull<jni::sys::JavaVM>) {
-    use jvm_link_contract::JvmtiCapabilities;
+    use jvm_link::JvmtiCapabilities;
     let before = unsafe { status(vm) };
     let connection = unsafe { Connection::connect_existing().unwrap() };
     let mut session = connection.jvmti_session().unwrap();

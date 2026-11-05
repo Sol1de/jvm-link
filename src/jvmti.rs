@@ -18,7 +18,7 @@ pub use raw::jvmtiCapabilities as JvmtiCapabilities;
 /// The unsafe connection's host-liveness obligation includes pending environments.
 ///
 /// ```
-/// # use jvm_link_contract::{Connection, JvmtiCapabilities, Result};
+/// # use jvm_link::{Connection, JvmtiCapabilities, Result};
 /// fn inspect(connection: &Connection) -> Result<()> {
 ///     let mut session = connection.jvmti_session()?;
 ///     // Keep `session` and close it explicitly even if open returns an error.
@@ -31,7 +31,7 @@ pub use raw::jvmtiCapabilities as JvmtiCapabilities;
 /// A session cannot be moved to another thread.
 ///
 /// ```compile_fail
-/// # use jvm_link_contract::Connection;
+/// # use jvm_link::Connection;
 /// fn transfer(connection: &Connection) {
 ///     let session = connection.jvmti_session().unwrap();
 ///     std::thread::scope(|threads| { threads.spawn(move || drop(session)); });
@@ -116,7 +116,6 @@ pub(crate) struct Pending {
     error: Option<Error>,
 }
 
-// The registry transports ownership only; take_jvmti permits access on its owner thread.
 unsafe impl Send for Pending {}
 
 pub(crate) unsafe fn retry_pending(vm: NonNull<sys::JavaVM>, report: bool) -> Result<()> {
@@ -272,7 +271,6 @@ mod tests {
 
     fn session_fixture(test: impl FnOnce(&crate::Connection, NonNull<raw::jvmtiEnv>)) {
         use std::ffi::c_void;
-        // Stable C JNI table slots; only these entries are exercised by the binding.
         let mut jni_table = [std::ptr::null::<c_void>(); 234];
         jni_table[15] = exception_occurred as *const c_void;
         jni_table[19] = push_frame as *const c_void;

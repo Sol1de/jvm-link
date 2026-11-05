@@ -3,7 +3,7 @@
 ## JNI binding
 
 Use [`jni` 0.22.4](https://docs.rs/crate/jni/0.22.4), with
-`default-features = false` and no `invocation` feature. The prototype pins this
+`default-features = false` and no `invocation` feature. The library pins this
 version and commits the resolved dependencies in `Cargo.lock`.
 
 Reuse its environments, local frames, references and errors. `jni-sys` alone
@@ -11,14 +11,14 @@ would require unsafe wrappers for routine calls and reference handling; use
 `jni::sys` only at the necessary low-level boundaries. Do not generate another
 binding or build a replacement JNI SDK.
 
-The prototype reexports the binding as `jvm_link_contract::jni`. Its types are therefore
+The library reexports the binding as `jvm_link::jni`. Its types are therefore
 part of the public contract: an incompatible binding upgrade requires a public
 API compatibility review. Version 0.22 uses `Env` and `Global<T>`; do not copy
 0.21 examples assuming the old `JNIEnv` API.
 
 ## Module boundaries
 
-The prototype contains `src/lib.rs`, private JVM discovery and attachment scope
+The library contains `src/lib.rs`, private JVM discovery and attachment scope
 modules, the public connection lifecycle, and embedded configuration. The
 intended runtime layout is:
 

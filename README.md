@@ -8,10 +8,11 @@ versions, including Java 8 and 17; those versions are not currently supported.
 
 ## Current status
 
-The non-publishable `jvm-link-contract` prototype now exposes an opaque
-`Connection`: unsafe discovery/admission of an existing Java 21 JVM, scoped
+`jvm-link` 0.1.0 is prepared for publication under the [MIT licence](LICENSE).
+It exposes an opaque `Connection`: unsafe discovery/admission of an existing Java 21 JVM, scoped
 operations and explicit retryable shutdown. It implements attachment ownership,
-reference cleanup and exception normalization. Publication remains future work.
+reference cleanup and exception normalization. The optional `jvmti` feature ships
+with the same Windows x64 / Java 21 validation matrix.
 
 Call `unsafe { Connection::connect_existing() }` only while the host guarantees
 JVM/module liveness through every attachment and exported global, including
@@ -27,6 +28,7 @@ configuration file is required. Editing it requires rebuilding the crate.
 - [Specifications](spec/README.md): scope, architecture, API, ownership and lifecycle.
 - [Compilable contract and doctests](src/lib.rs).
 - [Implementation guide](AGENTS.md).
+- [Release validation and publication procedure](spec/release.md).
 
 ## Checks
 
@@ -52,6 +54,9 @@ cargo test --lib --locked
 cargo test --doc --locked
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
+cargo test --release --locked
+cargo doc --no-deps --locked
+cargo package --locked
 ```
 
 These checks do not start a JVM. The doctests compile a valid consumer and reject
@@ -66,6 +71,14 @@ JDK (use its explicit path rather than the Java version on `PATH`):
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/java21-host/run.ps1 -JavaHome 'C:\path\to\jdk-21'
 ```
+
+Add `-Release` for the optimized adapter and `-Jvmti` for optional JVMTI checks;
+both switches can be combined. CI runs all four combinations on Windows x64,
+including unit tests with injected failures, lifetime/thread doctests, Clippy,
+documentation with warnings denied and compilation of the packaged source.
+The public API also undergoes 32 connect/operate/close cycles on each of a borrowed
+Java thread and a detached native thread, with eight nested operations per cycle.
+Each cycle verifies attachment ownership, idempotent close and rejection after close.
 
 This uses a process-local script execution policy and does not change system
 settings. Java starts and owns the technical JVM; the library never creates or

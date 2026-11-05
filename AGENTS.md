@@ -2,7 +2,7 @@
 
 jvm-link is an independent Rust library for borrowing an existing in-process JVM
 on Windows x64. Java 21 is the initial target; Java 8 and 17 are future targets.
-The current package, `jvm-link-contract`, is a non-publishable prototype with an
+The package, `jvm-link`, provides an
 opaque public Connection, Java 21 admission, Windows discovery, attachment scopes
 and retryable shutdown.
 See [README.md](README.md).
@@ -23,7 +23,8 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 ```
 
-These commands check the current prototype without starting a JVM.
+These commands check the library without starting a JVM. CI also runs release
+checks, documentation, packaging and the Java 21 host with and without JVMTI.
 
 # Code style and architecture
 
