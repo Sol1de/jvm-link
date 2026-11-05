@@ -10,6 +10,6 @@ public final class DiscoveryHost {
             throw new AssertionError("Discovery did not return the host JVM");
         }
         // The Java thread and VM must still work after repeated discovery.
-        System.out.println("Java 21 discovery passed; host remains alive");
+        System.out.println("Java 21 discovery and attachment scopes passed; host remains alive");
     }
 }

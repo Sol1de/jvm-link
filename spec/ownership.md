@@ -45,6 +45,21 @@ use binding subframes and temporary-reference management when needed.
 
 ## Low-level attachment boundary
 
+JL-3 implements this boundary privately in `src/scope.rs`. Its unsafe `with_env`
+entry accepts a live VM and uses the binding's borrowed `AttachGuard` and fresh
+local frame. Thread-local state is keyed by VM address, shared across nested
+calls, and stores ownership/depth but never an environment. Failed detachments
+remain owned at depth zero; `retry_cleanup` acts only on the current thread.
+This also retains failures during unwinding. No TLS borrow spans JNI or a callback.
+
+The `jni_version` field in the root `config.toml`, read and validated by
+`src/config.rs`, selects JNI 1.8
+for these baseline invocation calls; this
+is an interface request, not Java runtime admission. Java 21 admission and the
+public connection lifecycle remain later work. The internal entry preserves an
+exception pending on entry; normalization of operation exceptions belongs to
+JL-4. The public trait remains a contract fixture until those layers are ready.
+
 In `jni` 0.22.4, `AttachConfig` does not expose the required daemon mode.
 `AttachGuard::drop` logs detach failures and explicit detachment consumes the
 guard. Those helpers alone do not satisfy retryable cleanup.
